@@ -1,0 +1,26 @@
+# Backend Dockerfile (Python)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копируем requirements.txt и устанавливаем зависимости
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем исходный код (БЕЗ .env - переменные передаются через docker-compose)
+COPY backend/*.py ./
+
+EXPOSE 3001 3002
+
+# Создаем скрипт для запуска всех сервисов
+RUN echo '#!/bin/sh\npython server.py &\npython webhook.py &\npython bot.py &\nwait' > /app/start.sh && \
+    chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]
+
