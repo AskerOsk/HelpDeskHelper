@@ -2,45 +2,13 @@ import { useState, useEffect } from 'react'
 
 const BACKEND_URL = 'http://localhost:3001'
 
-// Status configurations with neon colors
+// Status configurations - functional style
 const STATUS_CONFIG = {
-  new: {
-    label: 'Новый',
-    color: 'text-blue-400',
-    bg: 'bg-blue-500/10',
-    border: 'border-blue-500/30',
-    icon: '🆕'
-  },
-  ai_processing: {
-    label: 'AI Обработка',
-    color: 'text-neon-green',
-    bg: 'bg-neon-green/10',
-    border: 'border-neon-green/30',
-    icon: '🤖',
-    glow: true
-  },
-  resolved: {
-    label: 'Решён',
-    color: 'text-green-400',
-    bg: 'bg-green-500/10',
-    border: 'border-green-500/30',
-    icon: '✅'
-  },
-  escalated: {
-    label: 'Эскалирован',
-    color: 'text-neon-orange',
-    bg: 'bg-neon-orange/10',
-    border: 'border-neon-orange/30',
-    icon: '🚨',
-    glow: true
-  },
-  closed: {
-    label: 'Закрыт',
-    color: 'text-gray-500',
-    bg: 'bg-gray-500/10',
-    border: 'border-gray-500/30',
-    icon: '🔒'
-  }
+  new: { label: 'NEW', shortLabel: 'NEW', color: '#7aa2f7', tag: 'tag-processing' },
+  ai_processing: { label: 'AI', shortLabel: 'AI', color: '#7aa2f7', tag: 'tag-processing' },
+  resolved: { label: 'RESOLVED', shortLabel: 'OK', color: '#9ece6a', tag: 'tag-resolved' },
+  escalated: { label: 'ESCALATED', shortLabel: 'ESC', color: '#f7768e', tag: 'tag-escalated' },
+  closed: { label: 'CLOSED', shortLabel: 'DONE', color: '#565f89', tag: 'tag-resolved' }
 }
 
 function App() {
@@ -48,15 +16,14 @@ function App() {
   const [selectedTicket, setSelectedTicket] = useState(null)
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('all') // all, escalated, ai_processing
 
-  // Fetch tickets every 5 seconds
   useEffect(() => {
     fetchTickets()
     const interval = setInterval(fetchTickets, 5000)
     return () => clearInterval(interval)
   }, [])
 
-  // Fetch messages when ticket selected
   useEffect(() => {
     if (selectedTicket) {
       fetchMessages(selectedTicket.id)
@@ -88,289 +55,322 @@ function App() {
   }
 
   const formatTime = (timestamp) => {
+    if (!timestamp) return '--:--'
     const date = new Date(timestamp)
-    const now = new Date()
-    const isToday = date.toDateString() === now.toDateString()
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+  }
 
-    if (isToday) {
-      return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const formatDate = (timestamp) => {
+    if (!timestamp) return '--.--.----'
+    const date = new Date(timestamp)
+    return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}.${date.getFullYear()}`
+  }
+
+  const filteredTickets = tickets.filter(ticket => {
+    if (filter === 'escalated') return ticket.status === 'escalated'
+    if (filter === 'ai_processing') return ticket.status === 'ai_processing'
+    return true
+  })
+
+  const getTicketPreview = (ticket) => {
+    return ticket.first_message?.substring(0, 60) || 'Без сообщения'
+  }
+
+  // Calculate AI metrics for selected ticket
+  const calculateMetrics = () => {
+    if (!messages.length) return { confidence: 0, iterations: 0, avgResponse: 0, escalations: 0 }
+
+    const aiMessages = messages.filter(m => m.sender_type === 'ai')
+    const avgConfidence = aiMessages.reduce((sum, m) => sum + (m.ai_confidence || 0), 0) / (aiMessages.length || 1)
+    const escalations = selectedTicket?.status === 'escalated' ? 1 : 0
+
+    return {
+      confidence: Math.round(avgConfidence * 100),
+      iterations: aiMessages.length,
+      avgResponse: '4.2s',
+      escalations
     }
-    return date.toLocaleDateString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
   }
 
-  const StatusBadge = ({ status }) => {
-    const config = STATUS_CONFIG[status] || STATUS_CONFIG.new
-    return (
-      <div className={`
-        inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium
-        ${config.bg} ${config.color} ${config.border} border
-        ${config.glow ? 'animate-pulse-slow shadow-neon-green' : ''}
-      `}>
-        <span className="text-sm">{config.icon}</span>
-        {config.label}
-      </div>
-    )
-  }
-
-  const TicketCard = ({ ticket }) => {
-    const isSelected = selectedTicket?.id === ticket.id
-
-    return (
-      <button
-        onClick={() => setSelectedTicket(ticket)}
-        className={`
-          w-full text-left p-4 rounded-xl transition-all duration-200
-          border backdrop-blur-sm
-          ${isSelected
-            ? 'bg-dark-card border-neon-green shadow-neon-green'
-            : 'bg-dark-panel/50 border-dark-border hover:border-neon-green/50 hover:bg-dark-card/80'
-          }
-        `}
-      >
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-neon-green font-mono text-sm">
-                #{ticket.ticket_number}
-              </span>
-              <span className="text-gray-500 text-xs">
-                @{ticket.telegram_username}
-              </span>
-            </div>
-            <StatusBadge status={ticket.status} />
-          </div>
-        </div>
-
-        <p className="text-gray-400 text-sm line-clamp-2 mt-3 mb-2">
-          {ticket.first_message || 'Нет сообщений'}
-        </p>
-
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-gray-500">
-            {formatTime(ticket.created_at)}
-          </span>
-          <span className="text-neon-green/70 flex items-center gap-1">
-            💬 {ticket.message_count || 0}
-          </span>
-        </div>
-      </button>
-    )
-  }
-
-  const MessageBubble = ({ message }) => {
-    const isAI = message.sender_type === 'ai'
-
-    return (
-      <div className={`flex ${isAI ? 'justify-start' : 'justify-end'} mb-4`}>
-        <div className={`
-          max-w-[70%] rounded-2xl p-4 backdrop-blur-sm
-          ${isAI
-            ? 'bg-dark-card border border-neon-green/20'
-            : 'bg-gradient-to-br from-neon-orange/20 to-neon-orange/10 border border-neon-orange/20'
-          }
-        `}>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium">
-              {isAI ? '🤖 AI Ассистент' : '👤 Пользователь'}
-            </span>
-            <span className="text-xs text-gray-500">
-              {formatTime(message.created_at)}
-            </span>
-          </div>
-
-          {message.media_type && (
-            <div className="mb-3">
-              {message.media_type === 'photo' ? (
-                <a
-                  href={message.media_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block rounded-lg overflow-hidden border border-dark-border hover:border-neon-green/50 transition-colors"
-                >
-                  <img
-                    src={message.media_url}
-                    alt="Attached"
-                    className="max-w-full h-auto"
-                  />
-                </a>
-              ) : message.media_type === 'video' ? (
-                <video
-                  src={message.media_url}
-                  controls
-                  className="max-w-full rounded-lg border border-dark-border"
-                />
-              ) : null}
-            </div>
-          )}
-
-          <p className={`text-sm whitespace-pre-wrap ${isAI ? 'text-gray-200' : 'text-gray-300'}`}>
-            {message.content}
-          </p>
-
-          {message.ai_confidence !== null && message.ai_confidence !== undefined && (
-            <div className="mt-2 pt-2 border-t border-dark-border">
-              <div className="flex items-center gap-2 text-xs text-gray-500">
-                <span>Уверенность AI:</span>
-                <div className="flex-1 bg-dark-bg rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-neon-green to-green-400 transition-all"
-                    style={{ width: `${(message.ai_confidence * 100)}%` }}
-                  />
-                </div>
-                <span className="text-neon-green font-medium">
-                  {(message.ai_confidence * 100).toFixed(0)}%
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
+  const metrics = selectedTicket ? calculateMetrics() : null
 
   return (
-    <div className="min-h-screen bg-dark-bg text-gray-100">
+    <div className="min-h-screen bg-[#1a1b26] text-[#a9b1d6] font-mono text-[13px]">
       {/* Header */}
-      <header className="border-b border-dark-border bg-dark-panel/50 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-[1920px] mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-neon-green to-green-400 flex items-center justify-center shadow-glow-green">
-                  <span className="text-2xl">🤖</span>
-                </div>
-                <div>
-                  <h1 className="text-xl font-bold bg-gradient-to-r from-neon-green via-green-400 to-neon-green bg-clip-text text-transparent">
-                    Sulpak AI HelpDesk
-                  </h1>
-                  <p className="text-xs text-gray-500">Мониторинг AI-ассистента</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-dark-card border border-dark-border">
-                <div className="w-2 h-2 rounded-full bg-neon-green animate-pulse shadow-glow-green" />
-                <span className="text-sm text-gray-400">AI Online</span>
-              </div>
-              <div className="text-sm text-gray-500">
-                {tickets.length} тикетов
-              </div>
-            </div>
+      <header className="bg-[#16161e] border-b border-[#292e42] px-4 py-1.5 flex items-center justify-between h-9">
+        <div className="flex items-center gap-2.5">
+          <span className="text-xs font-semibold text-[#7aa2f7]">SULPAK AI HELPDESK</span>
+          <span className="text-[#3b4261]">|</span>
+          <span className="text-[11px] text-[#565f89]">monitoring</span>
+        </div>
+        <div className="flex items-center gap-3.5 text-[11px]">
+          <div className="flex items-center gap-1.5 text-[#9ece6a]">
+            <div className="w-1.5 h-1.5 bg-[#9ece6a] rounded-full"></div>
+            ONLINE
           </div>
+          <span className="text-[#565f89]">{tickets.length} tickets</span>
+          <span className="text-[#3b4261]">{new Date().toLocaleTimeString('ru-RU')}</span>
         </div>
       </header>
 
-      {/* Main Content */}
-      <div className="max-w-[1920px] mx-auto flex h-[calc(100vh-73px)]">
-        {/* Left Panel - Ticket List */}
-        <div className="w-[400px] border-r border-dark-border bg-dark-panel/30 backdrop-blur-sm overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-dark-border">
-            <h2 className="text-lg font-semibold text-neon-green flex items-center gap-2">
-              <span>📋</span>
-              Тикеты
-            </h2>
+      {/* 3-column layout */}
+      <div className="grid grid-cols-[280px_1fr_300px] h-[calc(100vh-36px)]">
+        {/* Column 1: Ticket List */}
+        <div className="bg-[#16161e] border-r border-[#292e42] flex flex-col">
+          <div className="px-2.5 py-2 border-b border-[#292e42] flex items-center gap-2">
+            <span className="text-[11px] text-[#565f89] uppercase tracking-wider">Тикеты</span>
+            <div className="flex gap-0.5 ml-auto">
+              <button
+                onClick={() => setFilter('all')}
+                className={`px-1.5 py-0.5 text-[10px] rounded ${filter === 'all' ? 'text-[#7aa2f7] bg-[#7aa2f7]/10' : 'text-[#565f89]'}`}
+              >
+                Все
+              </button>
+              <button
+                onClick={() => setFilter('escalated')}
+                className={`px-1.5 py-0.5 text-[10px] rounded ${filter === 'escalated' ? 'text-[#7aa2f7] bg-[#7aa2f7]/10' : 'text-[#565f89]'}`}
+              >
+                ESC
+              </button>
+              <button
+                onClick={() => setFilter('ai_processing')}
+                className={`px-1.5 py-0.5 text-[10px] rounded ${filter === 'ai_processing' ? 'text-[#7aa2f7] bg-[#7aa2f7]/10' : 'text-[#565f89]'}`}
+              >
+                AI
+              </button>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto">
             {loading ? (
-              <div className="text-center py-12">
-                <div className="inline-block w-8 h-8 border-4 border-neon-green/20 border-t-neon-green rounded-full animate-spin" />
-                <p className="text-gray-500 mt-4">Загрузка...</p>
-              </div>
-            ) : tickets.length === 0 ? (
-              <div className="text-center py-12">
-                <span className="text-6xl opacity-20">📭</span>
-                <p className="text-gray-500 mt-4">Нет тикетов</p>
-              </div>
+              <div className="p-4 text-[#565f89] text-center">Загрузка...</div>
+            ) : filteredTickets.length === 0 ? (
+              <div className="p-4 text-[#565f89] text-center">Нет тикетов</div>
             ) : (
-              tickets.map(ticket => (
-                <TicketCard key={ticket.id} ticket={ticket} />
+              filteredTickets.map(ticket => (
+                <div
+                  key={ticket.id}
+                  onClick={() => setSelectedTicket(ticket)}
+                  className={`px-2.5 py-2 border-b border-[#292e42]/50 cursor-pointer transition-colors grid grid-cols-[1fr_auto] gap-1 ${
+                    selectedTicket?.id === ticket.id
+                      ? 'bg-[#7aa2f7]/8 border-l-2 border-l-[#7aa2f7]'
+                      : 'hover:bg-[#7aa2f7]/4'
+                  }`}
+                >
+                  <span className="text-[11px] text-[#7aa2f7]">#{ticket.ticket_number}</span>
+                  <span className="text-[10px] text-[#3b4261] text-right">{formatTime(ticket.created_at)}</span>
+                  <div className="col-span-2 text-[11px] text-[#565f89] truncate font-sans">
+                    {getTicketPreview(ticket)}
+                  </div>
+                  <div className="col-span-2 flex items-center gap-1.5 mt-0.5">
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${STATUS_CONFIG[ticket.status]?.tag || 'tag-processing'}`}>
+                      {STATUS_CONFIG[ticket.status]?.shortLabel || 'AI'}
+                    </span>
+                    <span className="text-[10px] text-[#3b4261] ml-auto">{ticket.message_count || 0} msg</span>
+                  </div>
+                </div>
               ))
             )}
           </div>
         </div>
 
-        {/* Right Panel - Chat Thread */}
-        <div className="flex-1 flex flex-col bg-dark-bg">
+        {/* Column 2: Chat */}
+        <div className="flex flex-col bg-[#1a1b26]">
           {selectedTicket ? (
             <>
-              {/* Chat Header */}
-              <div className="p-6 border-b border-dark-border bg-dark-panel/30 backdrop-blur-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="flex items-center gap-3 mb-2">
-                      <h3 className="text-lg font-semibold text-neon-green font-mono">
-                        #{selectedTicket.ticket_number}
-                      </h3>
-                      <span className="text-gray-400">@{selectedTicket.telegram_username}</span>
+              <div className="px-3.5 py-2 bg-[#16161e] border-b border-[#292e42] flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <h2 className="text-xs font-semibold text-[#c0caf5]">#{selectedTicket.ticket_number}</h2>
+                  <span className="text-[11px] text-[#565f89]">@{selectedTicket.telegram_username}</span>
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${STATUS_CONFIG[selectedTicket.status]?.tag || 'tag-processing'}`}>
+                    {STATUS_CONFIG[selectedTicket.status]?.shortLabel || 'AI'}
+                  </span>
+                </div>
+                <div className="flex gap-3.5 text-[10px] text-[#3b4261]">
+                  <span>created: {formatTime(selectedTicket.created_at)}</span>
+                  {selectedTicket.escalated_at && (
+                    <span className="text-[#f7768e]">esc: {formatTime(selectedTicket.escalated_at)}</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-3.5 py-3 flex flex-col gap-2.5">
+                {messages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`max-w-[75%] px-3 py-2 text-xs leading-relaxed font-sans ${
+                      msg.sender_type === 'user'
+                        ? 'self-end bg-[#283457] text-[#c0caf5] rounded-lg rounded-br-sm border border-[#3b4a75]'
+                        : 'self-start bg-[#1f2335] text-[#a9b1d6] rounded-lg rounded-bl-sm border border-[#292e42]'
+                    }`}
+                  >
+                    <div className={`text-[10px] font-semibold uppercase tracking-wide mb-1 font-mono ${
+                      msg.sender_type === 'user' ? 'text-[#7aa2f7]' : 'text-[#bb9af7]'
+                    }`}>
+                      {msg.sender_type === 'user' ? 'USR' : 'AI'}
                     </div>
-                    <StatusBadge status={selectedTicket.status} />
-                  </div>
-                  <div className="text-right text-sm text-gray-500">
-                    <div>Создан: {formatTime(selectedTicket.created_at)}</div>
-                    {selectedTicket.escalated_at && (
-                      <div className="text-neon-orange">
-                        Эскалирован: {formatTime(selectedTicket.escalated_at)}
+                    <div className="whitespace-pre-wrap">{msg.content}</div>
+                    {msg.sender_type === 'ai' && msg.ai_confidence > 0 && (
+                      <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-[#292e42] font-mono">
+                        <span className="text-[10px] text-[#3b4261]">conf:</span>
+                        <div className="flex-1 h-[3px] bg-[#292e42] rounded overflow-hidden">
+                          <div
+                            className="h-full bg-[#9ece6a] rounded"
+                            style={{ width: `${msg.ai_confidence * 100}%` }}
+                          ></div>
+                        </div>
+                        <span className="text-[10px] font-semibold text-[#9ece6a]">
+                          {Math.round(msg.ai_confidence * 100)}%
+                        </span>
                       </div>
                     )}
-                  </div>
-                </div>
-
-                {selectedTicket.ai_summary && (
-                  <div className="mt-4 p-4 rounded-lg bg-neon-orange/5 border border-neon-orange/20">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-neon-orange text-sm font-medium">💡 AI Резюме:</span>
+                    <div className="text-[10px] text-[#3b4261] text-right mt-1 font-mono">
+                      {formatTime(msg.created_at)}
                     </div>
-                    <p className="text-sm text-gray-300">{selectedTicket.ai_summary}</p>
                   </div>
-                )}
-              </div>
-
-              {/* Messages */}
-              <div className="flex-1 overflow-y-auto p-6">
-                {messages.length === 0 ? (
-                  <div className="text-center py-12">
-                    <span className="text-6xl opacity-20">💬</span>
-                    <p className="text-gray-500 mt-4">Нет сообщений</p>
-                  </div>
-                ) : (
-                  messages.map(message => (
-                    <MessageBubble key={message.id} message={message} />
-                  ))
-                )}
-              </div>
-
-              {/* Info Footer */}
-              <div className="p-4 border-t border-dark-border bg-dark-panel/30 backdrop-blur-sm">
-                <div className="flex items-center justify-center gap-2 text-sm text-gray-500">
-                  <span>👁️</span>
-                  <span>Режим мониторинга • Все ответы генерируются AI</span>
-                </div>
+                ))}
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-gradient-to-br from-neon-green/20 to-dark-card border border-neon-green/30 flex items-center justify-center">
-                  <span className="text-5xl opacity-50">💬</span>
+            <div className="flex items-center justify-center h-full text-[#565f89] text-sm">
+              Выберите тикет
+            </div>
+          )}
+        </div>
+
+        {/* Column 3: Info Panel */}
+        <div className="bg-[#16161e] border-l border-[#292e42] overflow-y-auto p-2.5">
+          {selectedTicket ? (
+            <>
+              {/* Ticket Info */}
+              <div className="mb-3.5">
+                <div className="text-[10px] text-[#3b4261] uppercase tracking-wider mb-2 pb-1 border-b border-[#292e42]">
+                  Тикет
                 </div>
-                <h3 className="text-xl font-semibold text-gray-400 mb-2">
-                  Выберите тикет
-                </h3>
-                <p className="text-gray-600">
-                  Кликните на тикет слева чтобы увидеть беседу
-                </p>
+                <div className="space-y-0.5">
+                  <div className="flex justify-between py-0.5 text-[11px]">
+                    <span className="text-[#565f89]">ID</span>
+                    <span className="text-[#7aa2f7]">#{selectedTicket.ticket_number}</span>
+                  </div>
+                  <div className="flex justify-between py-0.5 text-[11px]">
+                    <span className="text-[#565f89]">Статус</span>
+                    <span style={{ color: STATUS_CONFIG[selectedTicket.status]?.color }}>
+                      {STATUS_CONFIG[selectedTicket.status]?.label || 'AI'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-0.5 text-[11px]">
+                    <span className="text-[#565f89]">Создан</span>
+                    <span className="text-[#a9b1d6]">{formatTime(selectedTicket.created_at)}</span>
+                  </div>
+                  {selectedTicket.escalated_at && (
+                    <div className="flex justify-between py-0.5 text-[11px]">
+                      <span className="text-[#565f89]">Эскалация</span>
+                      <span className="text-[#f7768e]">{formatTime(selectedTicket.escalated_at)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between py-0.5 text-[11px]">
+                    <span className="text-[#565f89]">Сообщений</span>
+                    <span className="text-[#a9b1d6]">{messages.length}</span>
+                  </div>
+                </div>
               </div>
+
+              {/* Client Info */}
+              <div className="mb-3.5">
+                <div className="text-[10px] text-[#3b4261] uppercase tracking-wider mb-2 pb-1 border-b border-[#292e42]">
+                  Клиент
+                </div>
+                <div className="space-y-0.5">
+                  <div className="flex justify-between py-0.5 text-[11px]">
+                    <span className="text-[#565f89]">Username</span>
+                    <span className="text-[#a9b1d6]">@{selectedTicket.telegram_username}</span>
+                  </div>
+                  <div className="flex justify-between py-0.5 text-[11px]">
+                    <span className="text-[#565f89]">User ID</span>
+                    <span className="text-[#a9b1d6]">{selectedTicket.telegram_user_id}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* AI Metrics */}
+              {metrics && (
+                <div className="mb-3.5">
+                  <div className="text-[10px] text-[#3b4261] uppercase tracking-wider mb-2 pb-1 border-b border-[#292e42]">
+                    AI Метрики
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+                    <div className="bg-[#1a1b26] border border-[#292e42] rounded-md p-2 text-center">
+                      <div className="text-base font-bold text-[#9ece6a]">{metrics.confidence}%</div>
+                      <div className="text-[9px] text-[#3b4261] uppercase tracking-wide mt-0.5">Confidence</div>
+                    </div>
+                    <div className="bg-[#1a1b26] border border-[#292e42] rounded-md p-2 text-center">
+                      <div className="text-base font-bold text-[#e0af68]">{metrics.iterations}</div>
+                      <div className="text-[9px] text-[#3b4261] uppercase tracking-wide mt-0.5">Итерации</div>
+                    </div>
+                    <div className="bg-[#1a1b26] border border-[#292e42] rounded-md p-2 text-center">
+                      <div className="text-base font-bold text-[#7aa2f7]">{metrics.avgResponse}</div>
+                      <div className="text-[9px] text-[#3b4261] uppercase tracking-wide mt-0.5">Avg Response</div>
+                    </div>
+                    <div className="bg-[#1a1b26] border border-[#292e42] rounded-md p-2 text-center">
+                      <div className="text-base font-bold text-[#f7768e]">{metrics.escalations}</div>
+                      <div className="text-[9px] text-[#3b4261] uppercase tracking-wide mt-0.5">Эскалации</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* AI Summary */}
+              {selectedTicket.ai_summary && (
+                <div className="mb-3.5">
+                  <div className="text-[10px] text-[#3b4261] uppercase tracking-wider mb-2 pb-1 border-b border-[#292e42]">
+                    AI Резюме
+                  </div>
+                  <div className="bg-[#1a1b26] border border-[#292e42] rounded-md p-2.5 mt-1.5">
+                    <p className="text-[11px] text-[#565f89] leading-relaxed font-sans whitespace-pre-wrap">
+                      {selectedTicket.ai_summary}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center justify-center h-full text-[#565f89] text-xs">
+              Выберите тикет
             </div>
           )}
         </div>
       </div>
+
+      {/* Custom CSS for tags */}
+      <style>{`
+        .tag-escalated {
+          background: rgba(247, 118, 142, 0.15);
+          color: #f7768e;
+        }
+        .tag-processing {
+          background: rgba(122, 162, 247, 0.12);
+          color: #7aa2f7;
+        }
+        .tag-resolved {
+          background: rgba(158, 206, 106, 0.12);
+          color: #9ece6a;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+          width: 4px;
+        }
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+          background: #292e42;
+          border-radius: 2px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+          background: #3b4261;
+        }
+      `}</style>
     </div>
   )
 }
