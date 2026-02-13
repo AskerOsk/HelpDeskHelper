@@ -45,11 +45,11 @@ class SendMessageRequest(BaseModel):
 
 @app.post("/webhook/send-message")
 async def send_message(request: SendMessageRequest):
-    """Отправить сообщение клиенту в Telegram"""
+    """Отправить AI ответ клиенту в Telegram"""
     try:
         await bot.send_message(
             chat_id=request.telegramUserId,
-            text=f"💬 *Ответ менеджера* ({request.ticketNumber}):\n\n{request.message}",
+            text=f"🤖 *AI Ассистент* ({request.ticketNumber}):\n\n{request.message}",
             parse_mode=ParseMode.MARKDOWN
         )
         return {"success": True}
