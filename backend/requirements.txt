@@ -8,3 +8,10 @@ python-dotenv==1.0.1
 psycopg2-binary==2.9.10
 uvicorn[standard]==0.34.0
 
+# AI Integration
+anthropic==0.39.0
+
+# Email Service
+aiosmtplib==3.0.2
+email-validator==2.2.0
+

@@ -14,9 +14,12 @@ from dotenv import load_dotenv
 import httpx
 
 from constants import (
-    MIN_MESSAGE_LENGTH, CATEGORY_GENERAL, STATUS_NEW,
-    SENDER_MANAGER, HTTP_TIMEOUT, WEBHOOK_TIMEOUT
+    MIN_MESSAGE_LENGTH, CATEGORY_GENERAL, STATUS_NEW, STATUS_AI_PROCESSING,
+    STATUS_RESOLVED, STATUS_ESCALATED, STATUS_CLOSED,
+    SENDER_USER, SENDER_AI, HTTP_TIMEOUT, WEBHOOK_TIMEOUT
 )
+from ai_service import get_ai_service
+from email_service import get_email_service
 
 load_dotenv()
 
@@ -48,6 +51,7 @@ DB_NAME = os.getenv('DB_NAME', 'sulpak_helpdesk')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 DB_PORT = int(os.getenv('DB_PORT', '5432'))
 WEBHOOK_PORT = int(os.getenv('WEBHOOK_PORT', '3002'))
+WEBHOOK_HOST = os.getenv('WEBHOOK_HOST', 'localhost')
 
 # CORS origins - в продакшене должны быть указаны конкретные домены
 CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:5173,http://localhost:3000').split(',')
@@ -81,6 +85,8 @@ async def init_db():
                 telegram_username VARCHAR(255),
                 status VARCHAR(50) DEFAULT 'new',
                 assigned_manager_id INT,
+                ai_summary TEXT,
+                escalated_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT NOW(),
                 updated_at TIMESTAMP DEFAULT NOW()
             );
@@ -96,6 +102,7 @@ async def init_db():
                 media_type VARCHAR(20),
                 media_url TEXT,
                 media_file_id VARCHAR(255),
+                ai_confidence FLOAT,
                 created_at TIMESTAMP DEFAULT NOW()
             );
         ''')
@@ -104,7 +111,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS managers (
                 id SERIAL PRIMARY KEY,
                 name VARCHAR(255),
-                telegram_id BIGINT,
+                email VARCHAR(255),
                 active BOOLEAN DEFAULT true
             );
         ''')
@@ -194,7 +201,7 @@ class CreateTicketRequest(BaseModel):
 
 
 class AddMessageRequest(BaseModel):
-    senderType: str = Field(pattern="^(client|manager)$", description="Тип отправителя: client или manager")
+    senderType: str = Field(pattern="^(user|ai)$", description="Тип отправителя: user или ai")
     senderId: str = Field(min_length=1, max_length=255)
     content: str = Field(min_length=1, max_length=4000, description="Сообщение не может быть пустым")
     mediaType: Optional[str] = Field(None, pattern="^(photo|video)$")
@@ -203,7 +210,7 @@ class AddMessageRequest(BaseModel):
 
 
 class UpdateStatusRequest(BaseModel):
-    status: str = Field(pattern="^(new|in_progress|resolved|closed)$", description="Недопустимый статус")
+    status: str = Field(pattern="^(new|ai_processing|resolved|escalated|closed)$", description="Недопустимый статус")
 
 
 class AssignManagerRequest(BaseModel):
@@ -266,7 +273,7 @@ def generate_ticket_number() -> str:
 
 @api_v1_router.post("/tickets")
 async def create_ticket(request: CreateTicketRequest):
-    """Создание нового тикета"""
+    """Создание нового тикета с автоматическим AI ответом"""
     # AI валидация
     validation = await validate_with_ai(request.message)
 
@@ -282,29 +289,123 @@ async def create_ticket(request: CreateTicketRequest):
     ticket_number = generate_ticket_number()
 
     async with db_pool.acquire() as conn:
-        # Вставка тикета
+        # Вставка тикета со статусом ai_processing
         ticket = await conn.fetchrow(
             '''INSERT INTO tickets (ticket_number, telegram_user_id, telegram_username, status)
                VALUES ($1, $2, $3, $4) RETURNING *''',
-            ticket_number, request.telegramUserId, request.telegramUsername, 'new'
+            ticket_number, request.telegramUserId, request.telegramUsername, STATUS_AI_PROCESSING
         )
 
-        # Вставка первого сообщения
+        # Вставка первого сообщения от пользователя
         await conn.execute(
             '''INSERT INTO messages (ticket_id, sender_type, sender_id, content)
                VALUES ($1, $2, $3, $4)''',
-            ticket['id'], 'client', str(request.telegramUserId), request.message
+            ticket['id'], SENDER_USER, str(request.telegramUserId), request.message
         )
+
+        # Получить AI service
+        ai_service = get_ai_service()
+
+        # Подготовить conversation history
+        conversation_history = [{
+            'sender_type': SENDER_USER,
+            'content': request.message,
+            'media_type': None
+        }]
+
+        user_info = {
+            'telegram_user_id': request.telegramUserId,
+            'telegram_username': request.telegramUsername
+        }
+
+        # Получить AI ответ
+        try:
+            ai_response, confidence, should_escalate = await ai_service.get_ai_response(
+                ticket_id=ticket['id'],
+                conversation_history=conversation_history,
+                user_info=user_info
+            )
+
+            # Сохранить AI ответ в базу
+            ai_message = await conn.fetchrow(
+                '''INSERT INTO messages (ticket_id, sender_type, sender_id, content, ai_confidence)
+                   VALUES ($1, $2, $3, $4, $5) RETURNING *''',
+                ticket['id'], SENDER_AI, 'ai_assistant', ai_response, confidence
+            )
+
+            # Отправить AI ответ в Telegram через webhook
+            webhook_url = f"http://{WEBHOOK_HOST}:{WEBHOOK_PORT}/webhook/send-message"
+            try:
+                async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT) as client:
+                    await client.post(
+                        webhook_url,
+                        json={
+                            "telegramUserId": request.telegramUserId,
+                            "message": ai_response,
+                            "ticketNumber": ticket_number
+                        }
+                    )
+                logger.info(f"AI response sent to user {request.telegramUserId} for ticket {ticket_number}")
+            except Exception as e:
+                logger.error(f"Failed to send AI response via webhook: {e}")
+
+            # Если нужна эскалация
+            if should_escalate:
+                # Генерировать summary
+                summary = await ai_service.generate_conversation_summary(
+                    conversation_history + [{
+                        'sender_type': SENDER_AI,
+                        'content': ai_response,
+                        'media_type': None
+                    }]
+                )
+
+                # Обновить тикет
+                await conn.execute(
+                    '''UPDATE tickets SET status = $1, ai_summary = $2, escalated_at = NOW()
+                       WHERE id = $3''',
+                    STATUS_ESCALATED, summary, ticket['id']
+                )
+
+                # Отправить email менеджеру
+                email_service = get_email_service()
+                await email_service.send_escalation_email(
+                    ticket_number=ticket_number,
+                    ticket_id=ticket['id'],
+                    user_info=user_info,
+                    conversation_history=conversation_history + [{
+                        'sender_type': SENDER_AI,
+                        'content': ai_response,
+                        'created_at': ai_message['created_at'].isoformat()
+                    }],
+                    ai_summary=summary
+                )
+
+                logger.info(f"Ticket {ticket_number} escalated to manager")
+                status = STATUS_ESCALATED
+            else:
+                status = STATUS_AI_PROCESSING
+
+        except Exception as e:
+            logger.error(f"AI response failed for ticket {ticket['id']}: {e}", exc_info=True)
+            # Fallback: эскалировать при ошибке
+            await conn.execute(
+                '''UPDATE tickets SET status = $1, escalated_at = NOW()
+                   WHERE id = $2''',
+                STATUS_ESCALATED, ticket['id']
+            )
+            status = STATUS_ESCALATED
 
     return {
         "success": True,
         "ticket": {
             "id": ticket['id'],
-            "ticketNumber": ticket['ticket_number'],
-            "status": ticket['status'],
+            "ticketNumber": ticket_number,
+            "status": status,
             "createdAt": ticket['created_at'].isoformat()
         },
-        "category": validation.category
+        "category": validation.category,
+        "aiResponse": ai_response if 'ai_response' in locals() else None
     }
 
 
@@ -380,14 +481,14 @@ async def get_ticket(
 
 @api_v1_router.post("/tickets/{ticket_id}/messages")
 async def add_message(ticket_id: int, request: AddMessageRequest):
-    """Добавить сообщение в тикет"""
+    """Добавить сообщение в тикет и получить AI ответ"""
     async with db_pool.acquire() as conn:
         # Проверка существования тикета
-        ticket_exists = await conn.fetchval('SELECT EXISTS(SELECT 1 FROM tickets WHERE id = $1)', ticket_id)
-        if not ticket_exists:
+        ticket = await conn.fetchrow('SELECT * FROM tickets WHERE id = $1', ticket_id)
+        if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
-        # Сохранить сообщение
+        # Сохранить сообщение пользователя
         message = await conn.fetchrow(
             '''INSERT INTO messages (ticket_id, sender_type, sender_id, content, media_type, media_url, media_file_id)
                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *''',
@@ -401,45 +502,81 @@ async def add_message(ticket_id: int, request: AddMessageRequest):
             ticket_id
         )
 
-        # Если сообщение от менеджера - отправить клиенту в Telegram
-        if request.senderType == SENDER_MANAGER:
-            ticket = await conn.fetchrow(
-                'SELECT telegram_user_id, ticket_number FROM tickets WHERE id = $1',
+        # Если сообщение от пользователя - генерировать AI ответ
+        if request.senderType == SENDER_USER:
+            # Получить всю историю беседы
+            conversation_history = await conn.fetch(
+                '''SELECT sender_type, content, media_type, media_url, created_at
+                   FROM messages WHERE ticket_id = $1 ORDER BY created_at ASC''',
                 ticket_id
             )
 
-            if ticket:
-                # Отправка в webhook с retry logic
-                webhook_url = f"http://localhost:{WEBHOOK_PORT}/webhook/send-message"
-                max_retries = 3
-                retry_count = 0
-                success = False
+            history_list = [dict(msg) for msg in conversation_history]
 
-                while retry_count < max_retries and not success:
-                    try:
-                        async with httpx.AsyncClient() as client:
-                            response = await client.post(
-                                webhook_url,
-                                json={
-                                    "telegramUserId": ticket['telegram_user_id'],
-                                    "message": request.content,
-                                    "ticketNumber": ticket['ticket_number']
-                                },
-                                timeout=WEBHOOK_TIMEOUT
-                            )
-                            response.raise_for_status()
-                            success = True
-                            logger.info(f"Message sent to Telegram user {ticket['telegram_user_id']} for ticket #{ticket['ticket_number']}")
-                    except (httpx.TimeoutException, httpx.HTTPError) as e:
-                        retry_count += 1
-                        if retry_count < max_retries:
-                            logger.warning(f"Webhook attempt {retry_count} failed, retrying... Error: {e}")
-                            await asyncio.sleep(1 * retry_count)  # Exponential backoff
-                        else:
-                            logger.error(f"Failed to send message to Telegram after {max_retries} attempts: {e}")
-                    except Exception as e:
-                        logger.error(f"Unexpected error sending to Telegram: {e}")
-                        break
+            user_info = {
+                'telegram_user_id': ticket['telegram_user_id'],
+                'telegram_username': ticket['telegram_username']
+            }
+
+            # Получить AI ответ
+            ai_service = get_ai_service()
+            try:
+                ai_response, confidence, should_escalate = await ai_service.get_ai_response(
+                    ticket_id=ticket_id,
+                    conversation_history=history_list,
+                    user_info=user_info
+                )
+
+                # Сохранить AI ответ
+                ai_message = await conn.fetchrow(
+                    '''INSERT INTO messages (ticket_id, sender_type, sender_id, content, ai_confidence)
+                       VALUES ($1, $2, $3, $4, $5) RETURNING *''',
+                    ticket_id, SENDER_AI, 'ai_assistant', ai_response, confidence
+                )
+
+                # Отправить AI ответ в Telegram
+                webhook_url = f"http://{WEBHOOK_HOST}:{WEBHOOK_PORT}/webhook/send-message"
+                try:
+                    async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT) as client:
+                        await client.post(
+                            webhook_url,
+                            json={
+                                "telegramUserId": ticket['telegram_user_id'],
+                                "message": ai_response,
+                                "ticketNumber": ticket['ticket_number']
+                            }
+                        )
+                    logger.info(f"AI response sent to user {ticket['telegram_user_id']} for ticket {ticket['ticket_number']}")
+                except Exception as e:
+                    logger.error(f"Failed to send AI response via webhook: {e}")
+
+                # Если нужна эскалация
+                if should_escalate:
+                    # Генерировать summary
+                    summary = await ai_service.generate_conversation_summary(history_list)
+
+                    # Обновить тикет
+                    await conn.execute(
+                        '''UPDATE tickets SET status = $1, ai_summary = $2, escalated_at = NOW()
+                           WHERE id = $3''',
+                        STATUS_ESCALATED, summary, ticket_id
+                    )
+
+                    # Отправить email менеджеру
+                    email_service = get_email_service()
+                    await email_service.send_escalation_email(
+                        ticket_number=ticket['ticket_number'],
+                        ticket_id=ticket_id,
+                        user_info=user_info,
+                        conversation_history=history_list,
+                        ai_summary=summary
+                    )
+
+                    logger.info(f"Ticket {ticket['ticket_number']} escalated to manager")
+
+            except Exception as e:
+                logger.error(f"AI response failed for ticket {ticket_id}: {e}", exc_info=True)
+                # При ошибке не блокируем сохранение сообщения
 
     return dict(message)
 

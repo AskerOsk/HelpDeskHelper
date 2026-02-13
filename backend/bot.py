@@ -8,7 +8,7 @@ import httpx
 from datetime import datetime
 
 from constants import (
-    SENDER_CLIENT, MIN_MESSAGE_LENGTH, HTTP_TIMEOUT,
+    SENDER_USER, SENDER_AI, MIN_MESSAGE_LENGTH, HTTP_TIMEOUT,
     STATUS_EMOJI, STATUS_TEXT_RU
 )
 
@@ -181,7 +181,7 @@ async def show_ticket_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     message += "━━━━━━━━━━━━━━━━\n\n"
 
     for msg in messages:
-        sender = '👤 Вы' if msg['sender_type'] == 'client' else '👨‍💼 Менеджер'
+        sender = '👤 Вы' if msg['sender_type'] == 'user' else '🤖 AI Ассистент'
         msg_time = datetime.fromisoformat(msg['created_at'].replace('Z', '+00:00'))
         time_str = msg_time.strftime('%H:%M')
         message += f"{sender} ({time_str}):\n{msg['content']}\n\n"
@@ -229,7 +229,7 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, user
                         await client.post(
                             f"{BACKEND_URL}/api/v1/tickets/{ticket_id}/messages",
                             json={
-                                "senderType": "client",
+                                "senderType": "user",
                                 "senderId": str(user_id),
                                 "content": session['pending_media_caption'] or "Медиа",
                                 "mediaType": session['pending_media_type'],
@@ -253,7 +253,7 @@ async def create_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE, user
                 f"📋 Номер: *{data['ticket']['ticketNumber']}*\n"
                 f"📁 Категория: {data['category']}\n"
                 f"⏰ Статус: В обработке\n\n"
-                f"Менеджер свяжется с вами в ближайшее время.\n\n"
+                f"🤖 AI ассистент уже готовит ответ...\n\n"
                 f"💬 Ваши следующие сообщения будут добавлены в этот запрос.",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=ticket_menu(ticket_id)
@@ -272,7 +272,7 @@ async def add_message_to_ticket(update: Update, context: ContextTypes.DEFAULT_TY
             response = await client.post(
                 f"{BACKEND_URL}/api/v1/tickets/{ticket_id}/messages",
                 json={
-                    "senderType": SENDER_CLIENT,
+                    "senderType": SENDER_USER,
                     "senderId": str(user_id),
                     "content": message,
                     "mediaType": media_type,
@@ -283,9 +283,9 @@ async def add_message_to_ticket(update: Update, context: ContextTypes.DEFAULT_TY
             )
             response.raise_for_status()
 
-        response_text = "✅ Сообщение добавлено в запрос.\n\nМенеджер получит уведомление."
+        response_text = "✅ Сообщение добавлено в запрос.\n\n🤖 AI ассистент скоро ответит."
         if media_type:
-            response_text = f"✅ {media_type.capitalize()} добавлено в запрос.\n\nМенеджер получит уведомление."
+            response_text = f"✅ {media_type.capitalize()} добавлено в запрос.\n\n🤖 AI ассистент скоро ответит."
 
         await update.effective_message.reply_text(
             response_text,
